@@ -1,2 +1,2 @@
 # DwApi
-An http interface which accepts SparkSQL/HiveQL query string, perform computing on backend Spark cluster and  return results to Http client
+An HTTP interface which accepts a SparkSQL/HiveQL query string, perform computing on backend Spark cluster and  return results.
