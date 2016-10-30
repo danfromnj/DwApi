@@ -1,6 +1,7 @@
 import hashlib
 import redis
 
+DEFAULT_NAMESPACE = 'dwapi:query'
 class CacheManager(object):
     def __init__(self, host, port, db):
         self.r = redis.StrictRedis(host=host, port=port, db=db)
@@ -12,7 +13,7 @@ class CacheManager(object):
         return namespace + ':' + md5.hexdigest()
 
     def put(self, query_str, result, expire=300):
-        ck = self.gen_cachekey('dwapi:query', query_str)
+        ck = self.gen_cachekey(DEFAULT_NAMESPACE, query_str)
         ret = None
         try:
             ret = self.r.setex(ck, expire, result)
@@ -21,7 +22,7 @@ class CacheManager(object):
         return ret
 
     def get(self, query_str):
-        ck = self.gen_cachekey('dwapi:query', query_str)
+        ck = self.gen_cachekey(DEFAULT_NAMESPACE, query_str)
         ret = None
         try:
             ret = self.r.get(ck)

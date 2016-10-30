@@ -50,13 +50,8 @@ def verify_token(request_handler):
     except jwt.exceptions.DecodeError:
         return False, ''
     
-def cache_key_gen(request):
-    keys = (
-        request.get_argument('db', ''),
-        request.get_argument('table', ''),
-        request.get_argument('q', ''),
-        request.get_argument('limit', ''))
-    return '-*-'.join(keys)
+def cache_key_gen(request,query):
+    return query
 
 def get_cache_option(request):
     cache = request.get_argument('cache', '')
@@ -77,34 +72,19 @@ class CJsonEncoder(json.JSONEncoder):
             return obj.strftime('%Y-%m-%d')
         else:
             return json.JSONEncoder.default(self, obj)
-        
+   
 class SqlHandler(tornado.web.RequestHandler):
     executor = ThreadPoolExecutor(max_workers=appcfg['server.max_workers'])
     def __init__(self, application, request, **kwargs):
         self.info = INFO_TMPL
         super(SqlHandler, self).__init__(application, request, **kwargs)
     
-    def preprocess_query(self, post=False):
-        is_valid, uid = verify_token(self)
-        if not is_valid:
-            self.set_status(401)
-            self.info.update({'elapsed': 0,
-                              'status': 401,
-                              'msg': ''})
-            return False,uid,None
-        
-        return is_valid, uid, self.request.body if post else self.get_argument('q', '')
-    
     @tornado.web.asynchronous
-    @tornado.gen.coroutine
-    def get(self):
-        uri = self.request.uri
+    @tornado.gen.coroutine    
+    def process_query(self, post=False):
         is_valid, uid = verify_token(self)
-        self.info.update({'ctime': dt.datetime.now(),
-                          'uri': uri,
-                          'uid': uid,
-                          'hit_cache': False})
-
+        print is_valid,uid
+        self.info.update({'ctime': dt.datetime.now(),'uri': self.request.uri,'uid': uid,'hit_cache': False})
         if not is_valid:
             self.set_status(401)
             self.info.update({'elapsed': 0,
@@ -112,40 +92,46 @@ class SqlHandler(tornado.web.RequestHandler):
                               'msg': ''})
             self.finish("Your request is not authorized.")
         else:
-            begin = dt.datetime.now()
-            cache_key = cache_key_gen(self)
-            query = self.get_argument('q', '')
-            cache_opt = get_cache_option(self)
-            if cache_opt == CACHE_NO:
-                res = yield self.run_query(query)
-            elif appcfg['api.cache.enabled'] and cache_opt == CACHE_RENEW:
-                res = yield self.run_query(query)
-                cm.put(cache_key, json.dumps(res, default=DT_HANDLER),
-                       appcfg['api.cache.expire'])
-            elif appcfg['api.cache.enabled'] and not cache_opt:
-                res = cm.get(cache_key)
-                if not res:
-                    res = yield self.run_query(query)
-                    cm.put(cache_key, json.dumps(res, default=DT_HANDLER),
-                           appcfg['api.cache.expire'])
-                else:
-                    res = json.loads(res)
-                    self.info['hit_cache'] = True
+            try:
+                query = None
+                query = json.loads(self.request.body)['q'] if post else self.get_argument('q', '')
+            except (ValueError, KeyError) as e:
+                self.set_status(400)
+                self.info.update({'elapsed': 0,'status': self.get_status(),'msg': str(e)})
+            if not query:
+                self.finish("Your request does not contains a valid query.")
             else:
-                res = yield self.run_query(query)
-            elapsed = dt.datetime.now() - begin
-            res['elapsed'] = elapsed.total_seconds()
-            self.info.update({'elapsed': res['elapsed'],
-                              'status': 200,
-                              'msg': ''})
-            self.set_header("Content-Type", "application/json")
-            self.write(json.dumps(res,cls=CJsonEncoder))
-            self.finish()
+                begin = dt.datetime.now()
+                cache_key = cache_key_gen(self,query)
+                cache_opt = get_cache_option(self)
+                if cache_opt == CACHE_NO:
+                    res = yield self.run_query(query)
+                elif appcfg['api.cache.enabled'] and cache_opt == CACHE_RENEW:
+                    res = yield self.run_query(query)
+                    cm.put(cache_key, json.dumps(res, default=DT_HANDLER),appcfg['api.cache.expire'])
+                elif appcfg['api.cache.enabled'] and not cache_opt:
+                    res = cm.get(cache_key)
+                    if not res:
+                        res = yield self.run_query(query)
+                        cm.put(cache_key, json.dumps(res, default=DT_HANDLER),appcfg['api.cache.expire'])
+                    else:
+                        res = json.loads(res)
+                        self.info['hit_cache'] = True
+                else:
+                    res = yield self.run_query(query)
+                elapsed = dt.datetime.now() - begin
+                res['elapsed'] = elapsed.total_seconds()
+                self.info.update({'elapsed': res['elapsed'],'status': 200,'msg': ''})
+                self.set_header("Content-Type", "application/json")
+                self.write(json.dumps(res,cls=CJsonEncoder))
+                self.finish()
     
-    @tornado.web.asynchronous
-    @tornado.gen.coroutine
+    def get(self):
+        self.process_query(False)
+    
     def post(self):
-        print self.request.body
+        self.process_query(True)
+    
         
     @run_on_executor
     def run_query(self, query):
