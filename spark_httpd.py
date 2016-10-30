@@ -29,7 +29,7 @@ CACHE_RENEW = 'renew'
 
 from pyspark import StorageLevel
 from pyspark.sql import SparkSession
-spark = SparkSession.builder.master("yarn").appName("SimplePythonClient").enableHiveSupport().getOrCreate()
+spark = SparkSession.builder.master("yarn").appName("SparkSQL-HTTP").enableHiveSupport().getOrCreate()
 
 import platform
 INFO_TMPL = {'srv': platform.uname()[1], 'status': 200, 'uri': '',
@@ -72,11 +72,12 @@ class CJsonEncoder(json.JSONEncoder):
             return obj.strftime('%Y-%m-%d')
         else:
             return json.JSONEncoder.default(self, obj)
-   
+  
 class SqlHandler(tornado.web.RequestHandler):
     executor = ThreadPoolExecutor(max_workers=appcfg['server.max_workers'])
     def __init__(self, application, request, **kwargs):
         self.info = INFO_TMPL
+        self.resonse_fmt = ''
         super(SqlHandler, self).__init__(application, request, **kwargs)
     
     @tornado.web.asynchronous
@@ -103,17 +104,24 @@ class SqlHandler(tornado.web.RequestHandler):
             else:
                 begin = dt.datetime.now()
                 cache_key = cache_key_gen(self,query)
-                cache_opt = get_cache_option(self)
+                cache_opt = get_cache_option(self)                                
+                user = self.request.headers.get('user')
+                namespace = 'dwapi:query:' + user if user else 'dwapi:query'
+                fmt = self.get_argument('fmt', '')
+                if fmt:
+                    namespace = namespace + ":" + fmt
+                    self.resonse_fmt = fmt
+                    
                 if cache_opt == CACHE_NO:
                     res = yield self.run_query(query)
                 elif appcfg['api.cache.enabled'] and cache_opt == CACHE_RENEW:
                     res = yield self.run_query(query)
-                    cm.put(cache_key, json.dumps(res, default=DT_HANDLER),appcfg['api.cache.expire'])
+                    cm.put(cache_key, json.dumps(res, default=DT_HANDLER),namespace,appcfg['api.cache.expire'])
                 elif appcfg['api.cache.enabled'] and not cache_opt:
-                    res = cm.get(cache_key)
+                    res = cm.get(cache_key,namespace)
                     if not res:
                         res = yield self.run_query(query)
-                        cm.put(cache_key, json.dumps(res, default=DT_HANDLER),appcfg['api.cache.expire'])
+                        cm.put(cache_key, json.dumps(res, default=DT_HANDLER),namespace,appcfg['api.cache.expire'])
                     else:
                         res = json.loads(res)
                         self.info['hit_cache'] = True
@@ -123,6 +131,8 @@ class SqlHandler(tornado.web.RequestHandler):
                 res['elapsed'] = elapsed.total_seconds()
                 self.info.update({'elapsed': res['elapsed'],'status': 200,'msg': ''})
                 self.set_header("Content-Type", "application/json")
+                
+                #cls = None if self.resonse_fmt.lower() == 'pretty' else CJsonEncoder
                 self.write(json.dumps(res,cls=CJsonEncoder))
                 self.finish()
     
@@ -137,10 +147,12 @@ class SqlHandler(tornado.web.RequestHandler):
     def run_query(self, query):
         limited_query = self.add_limit(query)
         ds = spark.sql(limited_query)
-        #results = ds.toJSON().collect()
-        #res = {'result': [json.loads(x) for x in results]}
-        results = ds.collect()
-        res = {'result': results}
+        if self.resonse_fmt.lower() == 'pretty':
+            results = ds.toJSON().collect()
+            res = {'result': [json.loads(x) for x in results]}
+        else:
+            results = ds.collect()
+            res = {'result': results}
         return res
     
     def add_limit(self, query):
