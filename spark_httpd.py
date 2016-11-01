@@ -1,7 +1,6 @@
 import tornado.ioloop
 import tornado.web
 import tornado.gen
-from tornado import escape
 from tornado.options import define, options
 from tornado.concurrent import run_on_executor
 from concurrent.futures import ThreadPoolExecutor
@@ -10,7 +9,6 @@ from cache import CacheManager
 from db import db_session, ApiUsage
 
 import os
-from pip._vendor.requests.utils import is_valid_cidr
 paths = [os.environ["SPARK_HOME"] + '/python',
          os.environ["SPARK_HOME"] + '/bin',
          os.environ["SPARK_HOME"] + '/python/lib/py4j-0.10.3-src.zip']
