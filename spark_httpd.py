@@ -61,7 +61,7 @@ DT_HANDLER = lambda obj: obj.strftime('%Y-%m-%d %H:%M:%S %f') \
     
 import datetime as dt
 import json
-
+from pyspark.sql import Row
 class CJsonEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, dt.datetime):
@@ -144,6 +144,7 @@ class SqlHandler(tornado.web.RequestHandler):
     @run_on_executor
     def run_query(self, query):
         limited_query = self.add_limit(query)
+        logging.info('Run spark query [%s]'% limited_query)
         ds = spark.sql(limited_query)
         if self.resonse_fmt.lower() == 'pretty':
             results = ds.toJSON().collect()
@@ -182,38 +183,34 @@ class SqlHandler(tornado.web.RequestHandler):
 
 
 DFS = {}
-def load_df(_table):
-    def load_df_from_hive(table):
-        hql_tmpl = lambda hive_db, tname: 'FROM %s.%s SELECT *' % (hive_db, tname)
-        hive_sql = table['sql'] if 'sql' in table.keys() \
-            else hql_tmpl(table['hive_db'], table['name'])
-        df1 = spark.sql(hive_sql)
-        return df1
-
-    def load_df_from_inline_data(table):
-        return spark.createDataFrame(table['data'], table['cols'])
-
-    load_from = {
-        'hive': lambda table: load_df_from_hive(table)
-    }
-    df = load_from[_table['src']](_table)
+def load_to_rdd(sql):
+    ds = spark.sql(sql)
     if appcfg['spark.repartition']:
-        df = df.repartition(appcfg['spark.part_num'])
-    return df
-
-def prepare(_db, _table):
-    table_name = '{db}_{table}'.format(db=_db['name'], table=_table['name'])
-    df = load_df(_table)
-    df.persist(StorageLevel(True, True, False, False))
-    DFS.update({table_name: df})
-    df.createOrReplaceTempView(table_name)
-
-def register_tables():
+        ds = ds.repartition(appcfg['spark.part_num'])
+    ds.persist(StorageLevel(True, True, False, False))
+    return ds
+        
+def register_temp_tables():
     for db in appcfg['data_source']:
-        for table in db['tables']:
-            prepare(db, table)
-    print "Registered tables:"
-    print DFS.keys()
+        tables = []
+        sql = "show tables in %s" % db['db']
+        for table in spark.sql(sql).collect():
+            if table['tableName'] not in db["tables_excluded"] and not table['isTemporary']:
+                tables.append(table['tableName'])
+            
+        for table in tables:
+            ds = load_to_rdd('select * from %s.%s'% (db['db'],table))
+            temp_table_name ="%s_%s"% (db['db'],table)
+            DFS.update({temp_table_name: ds})
+            ds.createOrReplaceTempView(temp_table_name)
+        
+        for customized in db['tables_customized']:
+            ds = load_to_rdd(customized['sql'])
+            temp_table_name = temp_table_name ="%s_%s"% (db['db'],table)
+            DFS.update({temp_table_name: ds})
+            ds.createOrReplaceTempView(temp_table_name)
+        
+        
 
 app = tornado.web.Application(handlers=[
     (r'/dw/api/sql?', SqlHandler)], 
@@ -221,8 +218,14 @@ app = tornado.web.Application(handlers=[
 
 define("port", default=8888, help="run on the given port", type=int)
 
-if __name__ == "__main__":
-    register_tables()
+import logging
+if __name__ == "__main__":    
+    logging.basicConfig(level = appcfg['logging.level'],format=appcfg['logging.logfmt'], datefmt=appcfg['logging.datefmt'],
+                        filename=appcfg['logging.filename'],filemode=appcfg['logging.filemode'])
+    
+    register_temp_tables()
+    print "Registered tables:"
+    print DFS.keys()
     tornado.options.parse_command_line()
     app.listen(options.port)
     print "Data warehouse API server running at port %s" % options.port
