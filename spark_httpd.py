@@ -82,7 +82,6 @@ class SqlHandler(tornado.web.RequestHandler):
     @tornado.gen.coroutine    
     def process_query(self, post=False):
         is_valid, uid = verify_token(self)
-        print is_valid,uid
         self.info.update({'ctime': dt.datetime.now(),'uri': self.request.uri,'uid': uid,'hit_cache': False})
         if not is_valid:
             self.set_status(401)
@@ -143,7 +142,8 @@ class SqlHandler(tornado.web.RequestHandler):
         
     @run_on_executor
     def run_query(self, query):
-        limited_query = self.add_limit(query)
+        max_record = appcfg['limit.max']
+        limited_query = self.add_limit(query, max_record) if max_record > 0 else query
         logging.info('Run spark query [%s]'% limited_query)
         ds = spark.sql(limited_query)
         if self.resonse_fmt.lower() == 'pretty':
@@ -151,22 +151,22 @@ class SqlHandler(tornado.web.RequestHandler):
             res = {'result': [json.loads(x) for x in results]}
         else:
             results = ds.collect()
-            res = {'result': results}
+            res = {'result': results,'columns':ds.columns}
         return res
     
-    def add_limit(self, query):
+    def add_limit(self, query, max_record):
         words = query.split()
         size = len(words)
         if size  == 0 or not words[0].lower().startswith('select'):
             return query
             
         if size < 2 or words[size - 2].lower() != 'limit':
-            query = query + ' limit 1024'
+            query = query + (' limit %d'% max_record)
         elif size >= 2:
             try:
                 limit = int(words[size - 1])
-                if limit > 1024:
-                    query = query[ :query.rfind(words[size-1])] + '1024'
+                if limit > max_record:
+                    query = query[ :query.rfind(words[size-1])] + str(max_record)
             except Exception:
                 pass
         return query
@@ -209,8 +209,6 @@ def register_temp_tables():
             temp_table_name = temp_table_name ="%s_%s"% (db['db'],table)
             DFS.update({temp_table_name: ds})
             ds.createOrReplaceTempView(temp_table_name)
-        
-        
 
 app = tornado.web.Application(handlers=[
     (r'/dw/api/sql?', SqlHandler)], 
