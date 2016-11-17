@@ -19,15 +19,19 @@ for path in paths:
     sys.path.append(path)
     
 appcfg = ConfigFactory.parse_file(os.environ['DWAPI_CONF'])
-cm = CacheManager(host=appcfg['redis.host'],
-                  port=appcfg['redis.port'],
-                  db=appcfg['redis.db'])
+cm = CacheManager(host=appcfg['redis.host'], port=appcfg['redis.port'], db=appcfg['redis.db'])
 CACHE_NO = 'no'
 CACHE_RENEW = 'renew'
 
-from pyspark import StorageLevel
+from pyspark import SparkConf,StorageLevel
 from pyspark.sql import SparkSession
-spark = SparkSession.builder.master("yarn").appName("SparkSQL-HTTP").enableHiveSupport().getOrCreate()
+
+conf = SparkConf()
+for item in appcfg['spark.conf']:
+    conf.set(item['k'], item['v'])
+print conf.toDebugString()
+#spark = SparkSession.builder.master(appcfg['spark.master']).appName(appcfg['spark.app_name']).enableHiveSupport().getOrCreate()
+spark = SparkSession.builder.config(conf=conf).master(appcfg['spark.master']).appName(appcfg['spark.app_name']).enableHiveSupport().getOrCreate()
 
 import platform
 INFO_TMPL = {'srv': platform.uname()[1], 'status': 200, 'uri': '',
@@ -61,7 +65,6 @@ DT_HANDLER = lambda obj: obj.strftime('%Y-%m-%d %H:%M:%S %f') \
     
 import datetime as dt
 import json
-from pyspark.sql import Row
 class CJsonEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, dt.datetime):
